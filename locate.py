@@ -87,6 +87,9 @@ def parse_time(t):
     dt = parser.isoparse(t)
     return dt.astimezone(tz_target)
 
+def to_gpx_time(dt):
+    return dt.astimezone(timezone.utc)
+
 def get_place_name_from_api(place_id):
     if not args.nocache and place_id in place_cache:
         stats["cache_hit"] += 1
@@ -112,12 +115,22 @@ def get_place_name_from_api(place_id):
 
 def has_path_between(start, end, entries):
     for e in entries:
+        if "activity" not in e and "timelinePath" not in e:
+            continue
+
         t_start = parse_time(e["startTime"])
         t_end = parse_time(e["endTime"])
-        if t_start > start and t_end < end:
+        if t_end > start and t_start < end:
             if "activity" in e or "timelinePath" in e:
                 return True
     return False
+
+def format_range_desc(start_dt, end_dt):
+    start_local = start_dt.astimezone(tz_target)
+    end_local = end_dt.astimezone(tz_target)
+    duration = end_local - start_local
+    minutes = int(duration.total_seconds() // 60)
+    return f"from {start_local.isoformat()} to {end_local.isoformat()} ({minutes} min)"
 
 # 主處理函式
 def process_date(target_date_str, data):
@@ -151,9 +164,10 @@ def process_date(target_date_str, data):
                 lat, lon = parse_geo(point["point"])
                 offset_min = int(float(point["durationMinutesOffsetFromStartTime"]))
                 time = start_time + timedelta(minutes=offset_min)
-                segment.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon, time=time))
+                segment.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon, time=to_gpx_time(time)))
             track = gpxpy.gpx.GPXTrack()
             track.name = "Timeline Path"
+            track.description = format_range_desc(start_time, end_time)
             track.segments.append(segment)
             gpx.tracks.append(track)
             stats["timelinePath"] += 1
@@ -165,10 +179,11 @@ def process_date(target_date_str, data):
             lat1, lon1 = parse_geo(entry["activity"]["start"])
             lat2, lon2 = parse_geo(entry["activity"]["end"])
             segment = gpxpy.gpx.GPXTrackSegment()
-            segment.points.append(gpxpy.gpx.GPXTrackPoint(lat1, lon1, time=start_time))
-            segment.points.append(gpxpy.gpx.GPXTrackPoint(lat2, lon2, time=end_time))
+            segment.points.append(gpxpy.gpx.GPXTrackPoint(lat1, lon1, time=to_gpx_time(start_time)))
+            segment.points.append(gpxpy.gpx.GPXTrackPoint(lat2, lon2, time=to_gpx_time(end_time)))
             track = gpxpy.gpx.GPXTrack()
             track.name = entry["activity"]["topCandidate"]["type"]
+            track.description = format_range_desc(start_time, end_time)
             track.segments.append(segment)
             gpx.tracks.append(track)
             stats["activity"] += 1
@@ -178,7 +193,7 @@ def process_date(target_date_str, data):
         # 匯出 visit
         elif "visit" in entry:
             lat, lon = parse_geo(entry["visit"]["topCandidate"]["placeLocation"])
-            wpt = gpxpy.gpx.GPXWaypoint(latitude=lat, longitude=lon, time=start_time)
+            wpt = gpxpy.gpx.GPXWaypoint(latitude=lat, longitude=lon, time=to_gpx_time(start_time))
             # 先嘗試取得原始名稱
             original_name = entry["visit"]["topCandidate"].get("semanticType", "").strip()
 
@@ -193,6 +208,9 @@ def process_date(target_date_str, data):
             else:
                 wpt.name = original_name
 
+            start_dt = parse_time(entry["startTime"])
+            end_dt = parse_time(entry["endTime"])
+            wpt.description = format_range_desc(start_time, end_time)
             gpx.waypoints.append(wpt)
             stats["visit"] += 1
             if args.verbose:
@@ -202,8 +220,8 @@ def process_date(target_date_str, data):
             if previous_visit:
                 if not has_path_between(previous_visit["time"], start_time, data):
                     segment = gpxpy.gpx.GPXTrackSegment()
-                    segment.points.append(gpxpy.gpx.GPXTrackPoint(previous_visit["lat"], previous_visit["lon"], time=previous_visit["time"]))
-                    segment.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon, time=start_time))
+                    segment.points.append(gpxpy.gpx.GPXTrackPoint(previous_visit["lat"], previous_visit["lon"], time=to_gpx_time(previous_visit["time"])))
+                    segment.points.append(gpxpy.gpx.GPXTrackPoint(lat, lon, time=to_gpx_time(start_time)))
                     track = gpxpy.gpx.GPXTrack()
                     track.name = "Interpolated Visit Path"
                     track.segments.append(segment)
